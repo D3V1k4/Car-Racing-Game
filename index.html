@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lets Go - Neon Coastal Racer</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0a0a14;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    color: #e8e8ee;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 700px;
+    padding: 16px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 28px;
+    font-weight: 700;
+    margin: 0 0 4px;
+    letter-spacing: 1px;
+    background: linear-gradient(90deg, #ff4fd8, #4fc3ff, #ffb347);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #8888a0;
+    margin: 0 0 14px;
+  }
+  .hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .hud .stats { display: flex; gap: 18px; color: #aaa8c0; flex-wrap: wrap; }
+  .hud .stats strong { color: #fff; font-weight: 600; }
+  .hud .stats .combo { color: #ffb347; }
+  .hud .stats .combo strong { color: #ffb347; }
+  .btns { display: flex; gap: 8px; }
+  .btns button {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #e8e8ee;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btns button:hover { background: rgba(255,255,255,0.12); }
+  .btns button.active { background: rgba(255,180,80,0.18); border-color: rgba(255,180,80,0.5); }
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 14px;
+    background: #0a0a14;
+    cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.6);
+  }
+  .hint {
+    text-align: center;
+    font-size: 12px;
+    color: #6a6a80;
+    margin: 10px 0 0;
+  }
+  .best {
+    text-align: center;
+    font-size: 11px;
+    color: #555a70;
+    margin: 4px 0 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LETS GO</h1>
+  <p class="subtitle">neon coastal highway &middot; arcade racer</p>
+
+  <div class="hud">
+    <div class="stats">
+      <span>speed: <strong id="speedout">0</strong></span>
+      <span>score: <strong id="scoreout">0</strong></span>
+      <span class="combo">combo: <strong id="comboout">x1</strong></span>
+    </div>
+    <div class="btns">
+      <button id="soundBtn" class="active">sound: on</button>
+      <button id="restartBtn">restart</button>
+    </div>
+  </div>
+
+  <canvas id="game" width="680" height="520"></canvas>
+
+  <p class="hint">arrow keys or A/D to steer, hold up/W for boost &mdash; dodge traffic, clip a near-miss for bonus points</p>
+  <p class="best">best score: <span id="bestout">0</span></p>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const speedOut = document.getElementById('speedout');
+  const scoreOut = document.getElementById('scoreout');
+  const comboOut = document.getElementById('comboout');
+  const bestOut = document.getElementById('bestout');
+  const soundBtn = document.getElementById('soundBtn');
+
+  // ---------- AUDIO ENGINE (synthesized in-browser, no external files) ----------
+  let audioCtx = null;
+  let soundOn = true;
+  let engineOsc = null, engineGain = null, engineFilter = null;
+  let windNoise = null, windGain = null;
+
+  function ensureAudio(){
+    if(audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    engineGain = audioCtx.createGain();
+    engineGain.gain.value = 0.0;
+    engineFilter = audioCtx.createBiquadFilter();
+    engineFilter.type = 'lowpass';
+    engineFilter.frequency.value = 400;
+    engineGain.connect(engineFilter);
+    engineFilter.connect(audioCtx.destination);
+
+    engineOsc = audioCtx.createOscillator();
+    engineOsc.type = 'sawtooth';
+    engineOsc.frequency.value = 60;
+    engineOsc.connect(engineGain);
+    engineOsc.start();
+
+    const engineOsc2 = audioCtx.createOscillator();
+    engineOsc2.type = 'square';
+    engineOsc2.frequency.value = 61.5;
+    engineOsc2.connect(engineGain);
+    engineOsc2.start();
+    engineOsc._osc2 = engineOsc2;
+
+    const bufferSize = audioCtx.sampleRate * 2;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for(let i=0;i<bufferSize;i++) data[i] = Math.random()*2-1;
+    windNoise = audioCtx.createBufferSource();
+    windNoise.buffer = buffer;
+    windNoise.loop = true;
+    const windFilter = audioCtx.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.frequency.value = 800;
+    windFilter.Q.value = 0.6;
+    windGain = audioCtx.createGain();
+    windGain.gain.value = 0.0;
+    windNoise.connect(windFilter);
+    windFilter.connect(windGain);
+    windGain.connect(audioCtx.destination);
+    windNoise.start();
+  }
+
+  function setEngine(speedNorm, boosting){
+    if(!audioCtx || !soundOn) return;
+    const freq = 55 + speedNorm * 95;
+    engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.08);
+    engineOsc._osc2.frequency.setTargetAtTime(freq*1.02, audioCtx.currentTime, 0.08);
+    engineFilter.frequency.setTargetAtTime(300 + speedNorm*1800 + (boosting?900:0), audioCtx.currentTime, 0.1);
+    engineGain.gain.setTargetAtTime(0.05 + speedNorm*0.05, audioCtx.currentTime, 0.1);
+    windGain.gain.setTargetAtTime(0.015 + speedNorm*0.045, audioCtx.currentTime, 0.1);
+  }
+
+  function muteEngine(){
+    if(!audioCtx) return;
+    engineGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+    windGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+  }
+
+  function blip(freq, dur, type, vol, glideTo){
+    if(!audioCtx || !soundOn) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type || 'sine';
+    o.frequency.value = freq;
+    if(glideTo) o.frequency.exponentialRampToValueAtTime(glideTo, audioCtx.currentTime + dur);
+    g.gain.value = vol || 0.2;
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur + 0.02);
+  }
+
+  function noiseBurst(dur, vol, filterFreq){
+    if(!audioCtx || !soundOn) return;
+    const bufferSize = audioCtx.sampleRate * dur;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for(let i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    const filt = audioCtx.createBiquadFilter();
+    filt.type = 'highpass';
+    filt.frequency.value = filterFreq || 1200;
+    const g = audioCtx.createGain();
+    g.gain.value = vol || 0.3;
+    src.connect(filt);
+    filt.connect(g);
+    g.connect(audioCtx.destination);
+    src.start();
+  }
+
+  function sfxSpark(){ noiseBurst(0.08, 0.18, 2500); blip(1800, 0.06, 'square', 0.05); }
+  function sfxCrash(){
+    noiseBurst(0.4, 0.5, 300);
+    blip(120, 0.5, 'sawtooth', 0.3, 40);
+    setTimeout(()=>noiseBurst(0.25,0.3,800), 60);
+  }
+  function sfxBoostStart(){ blip(200, 0.25, 'sawtooth', 0.15, 500); }
+  function sfxPoint(){ blip(700, 0.08, 'sine', 0.12, 900); }
+  function sfxNearMiss(){ blip(500, 0.12, 'triangle', 0.15, 1100); setTimeout(()=>blip(900,0.1,'triangle',0.12,1400), 60); }
+  function sfxComboUp(){ blip(600, 0.07, 'square', 0.1, 1000); setTimeout(()=>blip(1000,0.08,'square',0.1,1500), 70); }
+  function sfxComboBreak(){ blip(300, 0.15, 'sawtooth', 0.12, 120); }
+
+  soundBtn.addEventListener('click', ()=>{
+    soundOn = !soundOn;
+    soundBtn.textContent = soundOn ? 'sound: on' : 'sound: off';
+    soundBtn.classList.toggle('active', soundOn);
+    if(soundOn) ensureAudio();
+    else muteEngine();
+  });
+
+  function unlockAudio(){
+    if(soundOn) ensureAudio();
+    if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  window.addEventListener('keydown', unlockAudio, {once:true});
+  canvas.addEventListener('pointerdown', unlockAudio, {once:true});
+
+  // ---------- GAME STATE ----------
+  const roadW = 420;
+  const roadX = (W - roadW) / 2;
+  let bestScore = 0;
+  try {
+    bestScore = parseInt(localStorage.getItem('letsgo_best') || '0', 10) || 0;
+  } catch(e){ bestScore = 0; }
+  bestOut.textContent = bestScore;
+
+  let state = {
+    carX: W/2,
+    speed: 6,
+    maxSpeed: 15,
+    boosting: false,
+    wasBoosting: false,
+    crashed: false,
+    score: 0,
+    distance: 0,
+    combo: 1,
+    comboTimer: 0,
+    keys: {},
+    obstacles: [],
+    sparks: [],
+    popups: [],
+    shake: 0,
+    flash: 0,
+    nearMissCooldown: 0,
+    skylineHue: 0
+  };
+
+  function spawnObstacle(){
+    const laneCount = 3;
+    const lane = Math.floor(Math.random()*laneCount);
+    const laneW = roadW/laneCount;
+    state.obstacles.push({
+      x: roadX + laneW*lane + laneW/2,
+      y: -60,
+      w: 38, h: 64,
+      hue: Math.random()*360,
+      passed: false,
+      nearMissed: false
+    });
+  }
+
+  function addPopup(text, x, y, color){
+    state.popups.push({text, x, y, life: 50, color: color || '#fff'});
+  }
+
+  function addScore(amount){
+    state.score += Math.round(amount * state.combo);
+  }
+
+  function bumpCombo(){
+    state.combo = Math.min(8, state.combo + 1);
+    state.comboTimer = 180;
+    sfxComboUp();
+  }
+
+  function reset(){
+    state.carX = W/2;
+    state.speed = 6;
+    state.crashed = false;
+    state.score = 0;
+    state.distance = 0;
+    state.combo = 1;
+    state.comboTimer = 0;
+    state.obstacles = [];
+    state.sparks = [];
+    state.popups = [];
+    state.shake = 0;
+    state.flash = 0;
+    state.nearMissCooldown = 0;
+  }
+
+  document.addEventListener('keydown', e=>{
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','a','d','w','s'].includes(e.key)){
+      state.keys[e.key] = true;
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('keyup', e=>{
+    state.keys[e.key] = false;
+  });
+
+  document.getElementById('restartBtn').addEventListener('click', reset);
+  canvas.addEventListener('click', ()=>{ if(state.crashed) reset(); });
+
+  let touchX = null;
+  canvas.addEventListener('touchstart', e=>{ touchX = e.touches[0].clientX; });
+  canvas.addEventListener('touchmove', e=>{
+    if(touchX===null) return;
+    const dx = e.touches[0].clientX - touchX;
+    state.carX += dx * 1.2;
+    touchX = e.touches[0].clientX;
+  });
+
+  function rectsOverlap(ax,ay,aw,ah,bx,by,bw,bh){
+    return Math.abs(ax-bx) < (aw+bw)/2 && Math.abs(ay-by) < (ah+bh)/2;
+  }
+
+  function saveBest(){
+    if(state.score > bestScore){
+      bestScore = state.score;
+      bestOut.textContent = bestScore;
+      try { localStorage.setItem('letsgo_best', String(bestScore)); } catch(e){}
+    }
+  }
+
+  function update(){
+    state.skylineHue += 0.05;
+
+    if(state.crashed){
+      state.shake *= 0.9;
+      state.flash *= 0.9;
+      muteEngine();
+      return;
+    }
+
+    const left = state.keys['ArrowLeft'] || state.keys['a'];
+    const right = state.keys['ArrowRight'] || state.keys['d'];
+    const boost = state.keys['ArrowUp'] || state.keys['w'];
+
+    state.boosting = !!boost;
+    if(state.boosting && !state.wasBoosting){ sfxBoostStart(); }
+    state.wasBoosting = state.boosting;
+
+    const targetSpeed = boost ? state.maxSpeed : 7;
+    state.speed += (targetSpeed - state.speed) * 0.04;
+
+    const speedNorm = (state.speed - 6) / (state.maxSpeed - 6);
+    setEngine(Math.max(0, Math.min(1, speedNorm)), state.boosting);
+
+    if(state.boosting) state.shake = Math.max(state.shake, 1.5);
+
+    const steerSpeed = 6.5;
+    if(left) state.carX -= steerSpeed;
+    if(right) state.carX += steerSpeed;
+
+    const margin = 30;
+    const minX = roadX + margin;
+    const maxX = roadX + roadW - margin;
+    if(state.carX < minX){
+      state.carX = minX;
+      if(left){
+        for(let i=0;i<6;i++){
+          state.sparks.push({x: minX-14, y: H-90, vx: -Math.random()*3-1, vy: (Math.random()-0.5)*4, life: 20, color: [255,180,80]});
+        }
+        if(Math.random() < 0.15) sfxSpark();
+      }
+    }
+    if(state.carX > maxX){
+      state.carX = maxX;
+      if(right){
+        for(let i=0;i<6;i++){
+          state.sparks.push({x: maxX+14, y: H-90, vx: Math.random()*3+1, vy: (Math.random()-0.5)*4, life: 20, color: [255,180,80]});
+        }
+        if(Math.random() < 0.15) sfxSpark();
+      }
+    }
+
+    state.distance += state.speed;
+    addScore(state.speed * 0.08);
+
+    if(state.comboTimer > 0){
+      state.comboTimer--;
+      if(state.comboTimer === 0 && state.combo > 1){
+        state.combo = 1;
+        sfxComboBreak();
+      }
+    }
+
+    if(state.nearMissCooldown > 0) state.nearMissCooldown--;
+
+    if(Math.random() < 0.022 + state.speed*0.0018){
+      if(state.obstacles.length < 5) spawnObstacle();
+    }
+
+    const carY = H - 90;
+    const carW = 34, carH = 58;
+
+    for(const ob of state.obstacles){
+      ob.y += state.speed * 1.4;
+
+      if(!ob.passed && !ob.nearMissed && ob.y > carY - 40 && ob.y < carY + 20){
+        const lateralDist = Math.abs(ob.x - state.carX);
+        if(lateralDist < 60 && lateralDist > 28 && state.nearMissCooldown === 0){
+          ob.nearMissed = true;
+          state.nearMissCooldown = 20;
+          addScore(15);
+          bumpCombo();
+          sfxNearMiss();
+          addPopup('near miss +' + Math.round(15*state.combo), state.carX, carY - 60, '#4fc3ff');
+        }
+      }
+
+      if(!ob.passed && ob.y > carY + 40){
+        ob.passed = true;
+        addScore(3);
+        sfxPoint();
+      }
+
+      if(!state.crashed && ob.y > carY - 30 && ob.y < carY + 30 && rectsOverlap(state.carX, carY, carW, carH, ob.x, ob.y, ob.w, ob.h)){
+        state.crashed = true;
+        state.shake = 16;
+        state.flash = 1;
+        sfxCrash();
+        saveBest();
+        for(let i=0;i<24;i++){
+          state.sparks.push({x: state.carX, y: carY-20, vx:(Math.random()-0.5)*9, vy:(Math.random()-0.5)*9-2, life: 36, color:[255,140,60]});
+        }
+      }
+    }
+    state.obstacles = state.obstacles.filter(ob => ob.y < H + 80);
+
+    for(const s of state.sparks){
+      s.x += s.vx; s.y += s.vy; s.vy += 0.2; s.life--;
+    }
+    state.sparks = state.sparks.filter(s => s.life > 0);
+
+    for(const p of state.popups){ p.y -= 0.7; p.life--; }
+    state.popups = state.popups.filter(p => p.life > 0);
+
+    speedOut.textContent = Math.round(state.speed * 18);
+    scoreOut.textContent = state.score;
+    comboOut.textContent = 'x' + state.combo;
+  }
+
+  let dashOffset = 0;
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    ctx.save();
+    if(state.shake > 0.4){
+      ctx.translate((Math.random()-0.5)*state.shake, (Math.random()-0.5)*state.shake);
+    }
+
+    const skyGrad = ctx.createLinearGradient(0,0,0,H*0.45);
+    skyGrad.addColorStop(0,'#0a0a1f');
+    skyGrad.addColorStop(1,'#1a0e2e');
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0,0,W,H*0.45);
+
+    ctx.fillStyle = '#06050d';
+    ctx.fillRect(0,H*0.4,W,H*0.6);
+
+    ctx.fillStyle = 'rgba(255,210,150,0.85)';
+    ctx.beginPath();
+    ctx.arc(W*0.78, H*0.16, 28, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,210,150,0.12)';
+    ctx.beginPath();
+    ctx.arc(W*0.78, H*0.16, 50, 0, Math.PI*2);
+    ctx.fill();
+
+    const winHue = (Math.sin(state.skylineHue) * 40 + 320);
+    for(let i=0;i<7;i++){
+      const bx = (i*97 - (state.distance*0.3)%97);
+      const bw = 50;
+      const bh = 60 + (i%4)*40;
+      ctx.fillStyle = '#120a22';
+      ctx.fillRect(bx, H*0.45-bh, bw, bh);
+      ctx.fillStyle = `hsla(${winHue + i*15}, 85%, 65%, 0.55)`;
+      for(let w=0;w<3;w++){
+        for(let r=0;r<Math.floor(bh/18);r++){
+          if(Math.random() > 0.3) ctx.fillRect(bx+8+w*14, H*0.45-bh+10+r*18, 6, 8);
+        }
+      }
+    }
+
+    const horizon = H*0.4;
+    const roadTopW = 60;
+    const roadBottomW = roadW;
+    const roadTopX = W/2 - roadTopW/2;
+    const roadBottomX = roadX;
+
+    ctx.fillStyle = '#15141c';
+    ctx.beginPath();
+    ctx.moveTo(roadTopX, horizon);
+    ctx.lineTo(roadTopX+roadTopW, horizon);
+    ctx.lineTo(roadBottomX+roadBottomW, H);
+    ctx.lineTo(roadBottomX, H);
+    ctx.closePath();
+    ctx.fill();
+
+    const wetGrad = ctx.createLinearGradient(0,horizon,0,H);
+    wetGrad.addColorStop(0,'rgba(255,80,180,0.04)');
+    wetGrad.addColorStop(0.5,'rgba(80,140,255,0.05)');
+    wetGrad.addColorStop(1,'rgba(255,140,60,0.06)');
+    ctx.fillStyle = wetGrad;
+    ctx.beginPath();
+    ctx.moveTo(roadTopX, horizon);
+    ctx.lineTo(roadTopX+roadTopW, horizon);
+    ctx.lineTo(roadBottomX+roadBottomW, H);
+    ctx.lineTo(roadBottomX, H);
+    ctx.closePath();
+    ctx.fill();
+
+    function laneXAtY(y, laneFrac){
+      const t = (y - horizon) / (H - horizon);
+      const topX = roadTopX + roadTopW*laneFrac;
+      const botX = roadBottomX + roadBottomW*laneFrac;
+      return topX + (botX-topX)*t;
+    }
+
+    ctx.strokeStyle = 'rgba(255,235,200,0.5)';
+    ctx.lineWidth = 2;
+    for(const frac of [1/3, 2/3]){
+      ctx.beginPath();
+      dashOffset = (dashOffset + state.speed*1.4) % 40;
+      ctx.setLineDash([16,18]);
+      ctx.lineDashOffset = -dashOffset;
+      ctx.moveTo(laneXAtY(horizon, frac), horizon);
+      ctx.lineTo(laneXAtY(H, frac), H);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = 'rgba(120,220,255,0.7)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(roadTopX, horizon);
+    ctx.lineTo(roadBottomX, H);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(roadTopX+roadTopW, horizon);
+    ctx.lineTo(roadBottomX+roadBottomW, H);
+    ctx.stroke();
+
+    for(const ob of state.obstacles){
+      const t = (ob.y - horizon)/(H-horizon);
+      const scale = Math.max(0.15, Math.min(1, t));
+      const w = ob.w * scale, h = ob.h * scale;
+      ctx.save();
+      ctx.translate(ob.x, ob.y);
+      if(ob.nearMissed){
+        ctx.shadowColor = '#4fc3ff';
+        ctx.shadowBlur = 12;
+      }
+      ctx.fillStyle = `hsl(${ob.hue}, 70%, 55%)`;
+      ctx.beginPath();
+      ctx.roundRect(-w/2, -h/2, w, h, 6*scale);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = `hsla(${ob.hue},90%,75%,0.9)`;
+      ctx.fillRect(-w/2+2*scale, -h/2+2*scale, w-4*scale, 6*scale);
+      ctx.restore();
+    }
+
+    if(state.speed > 9){
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for(let i=0;i<10;i++){
+        const y = (i*53 + state.distance*3) % H;
+        ctx.beginPath();
+        ctx.moveTo(0,y);
+        ctx.lineTo(40,y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(W,y);
+        ctx.lineTo(W-40,y);
+        ctx.stroke();
+      }
+    }
+
+    const carY = H - 90;
+    ctx.save();
+    ctx.translate(state.carX, carY);
+    const tilt = (state.keys['ArrowLeft']||state.keys['a']) ? -0.06 : (state.keys['ArrowRight']||state.keys['d']) ? 0.06 : 0;
+    ctx.rotate(tilt);
+
+    if(state.boosting && !state.crashed){
+      ctx.fillStyle = 'rgba(255,160,60,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(-10, 36, 6, 20+Math.random()*10, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(10, 36, 6, 20+Math.random()*10, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,220,150,0.4)';
+      ctx.beginPath();
+      ctx.ellipse(-10, 30, 3, 10, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(10, 30, 3, 10, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle = 'rgba(255,80,200,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(0, 4, 26, 8, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = state.crashed ? '#444' : '#e8e8ee';
+    ctx.beginPath();
+    ctx.moveTo(-16, 28);
+    ctx.lineTo(-18, -10);
+    ctx.quadraticCurveTo(-14, -28, 0, -30);
+    ctx.quadraticCurveTo(14, -28, 18, -10);
+    ctx.lineTo(16, 28);
+    ctx.quadraticCurveTo(10, 32, 0, 32);
+    ctx.quadraticCurveTo(-10, 32, -16, 28);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(80,200,255,0.5)';
+    ctx.beginPath();
+    ctx.ellipse(0,-14,10,10,0,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ff3355';
+    ctx.fillRect(-15,26,7,4);
+    ctx.fillRect(8,26,7,4);
+
+    ctx.restore();
+
+    for(const s of state.sparks){
+      const c = s.color || [255,150,80];
+      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${Math.max(0,s.life/30)})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 2+Math.random()*2, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    for(const p of state.popups){
+      ctx.globalAlpha = Math.max(0, p.life/50);
+      ctx.fillStyle = p.color;
+      ctx.font = '700 14px -apple-system, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.text, p.x, p.y);
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+
+    if(state.flash > 0.02){
+      ctx.fillStyle = `rgba(255,160,80,${state.flash*0.5})`;
+      ctx.fillRect(0,0,W,H);
+    }
+
+    if(state.crashed){
+      ctx.fillStyle = 'rgba(5,3,10,0.55)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 28px -apple-system, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('wiped out', W/2, H/2 - 16);
+      ctx.font = '400 15px -apple-system, Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText('score: ' + state.score + (state.score >= bestScore && state.score > 0 ? '  —  new best!' : ''), W/2, H/2 + 14);
+      ctx.font = '400 13px -apple-system, Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillText('click or restart to go again', W/2, H/2 + 38);
+    }
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
+</script>
+</body>
+</html>
